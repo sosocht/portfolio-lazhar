@@ -786,6 +786,16 @@
     body.revision-on [contenteditable="true"]:focus { box-shadow: 0 0 0 2px #3b82f6; background: rgba(59,130,246,.12); }
     body.revision-on .rev-modif { background: rgba(34,197,94,.16); box-shadow: inset 0 0 0 1px rgba(34,197,94,.5); }
     body.revision-on .apropos-word { opacity: 1 !important; }   /* fige l'anim pour éditer l'intro proprement */
+    /* Roue des domaines (hero) : la roue tourne en continu et passe sous la bulle « Bonjour », impossible à cliquer.
+       En révision elle est remplacée par sa liste source (les 6 domaines, fixes, éditables). */
+    body.revision-on .hero3__wheel { height: auto; overflow: visible; cursor: text; perspective: none; -webkit-mask-image: none; mask-image: none; }
+    body.revision-on .hero3__wheelTrack { display: none; }
+    body.revision-on .hero3__wheelSource { display: block !important; list-style: none; margin: 0; padding: 0; }
+    body.revision-on .hero3__wheelSource li { padding: .15em 0; }
+    /* Bouton « Voir le détail » posé sur chaque carte Expertise : en révision, le clic sur le texte d'une carte sert
+       à le corriger, il n'ouvre donc plus la fiche détaillée — ce bouton le fait à sa place. */
+    .rev-detail { position: absolute; top: 10px; right: 10px; z-index: 5; border: 0; border-radius: 999px; padding: 6px 12px; font: 600 12px/1 system-ui, "Segoe UI", sans-serif; background: #3b82f6; color: #fff; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+    .rev-detail:hover { background: #2563eb; }
     #revBar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100000; background: #0f172a; color: #fff;
       font: 14px/1.4 system-ui, "Segoe UI", sans-serif; padding: 10px 16px; display: flex; align-items: center;
       gap: 12px; flex-wrap: wrap; box-shadow: 0 -2px 16px rgba(0,0,0,.35); }
@@ -795,19 +805,39 @@
     #revBar button { border: 0; border-radius: 8px; padding: 8px 14px; font: inherit; font-weight: 600; cursor: pointer; }
     #revBar .rev-primary { background: #3b82f6; color: #fff; }
     #revBar .rev-ghost { background: #334155; color: #fff; }
+    #revBar .rev-warn { background: #b45309; color: #fff; }
     #revCount { opacity: .85; white-space: nowrap; }
+    @media (max-width: 640px) {   /* barre compacte sur téléphone : le rappel disparaît, boutons resserrés */
+      #revBar { padding: 8px 10px; gap: 8px; font-size: 13px; }
+      #revBar .rev-hint, #revBar b { display: none; }
+      #revBar button { padding: 7px 10px; }
+    }
+    /* Aide : affichée à la première ouverture, puis via le bouton « Aide » */
+    #revHelp { position: fixed; inset: 0; z-index: 100002; background: rgba(15,23,42,.55); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    #revHelp .rev-help__box { background: #fff; color: #0f172a; border-radius: 14px; max-width: 540px; width: 100%; padding: 22px 24px; font: 15px/1.5 system-ui, "Segoe UI", sans-serif; box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+    #revHelp h2 { margin: 0 0 12px; font-size: 18px; }
+    #revHelp ol { margin: 0 0 16px; padding-left: 22px; }
+    #revHelp li { margin-bottom: 8px; }
+    #revHelp button { border: 0; border-radius: 8px; padding: 10px 16px; font: inherit; font-weight: 600; background: #3b82f6; color: #fff; cursor: pointer; }
   </style>
   <script>
   (function(){
     var qp = new URLSearchParams(location.search);
     if (!qp.has('revision') && location.hash.indexOf('revision') < 0) return;
-    var KEY = 'lazhar-revisions-v2';
+    var KEY = 'lazhar-revisions-v2', KEY_AIDE = 'lazhar-revisions-aide-vue';
+    var LANGUES = { fr: 'Français', en: 'Anglais', ar: 'Arabe' };
     function lang(){ return document.documentElement.lang || 'fr'; }
     var store; try { store = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(e){ store = {}; }
     function save(){ try { localStorage.setItem(KEY, JSON.stringify(store)); } catch(e){} }
-    var orig = {};      // texte d'origine par identifiant
+    var origL = {};     // texte d'origine par langue puis par identifiant (le site est trilingue : un original par langue)
     var elById = {};    // identifiant -> élément
+    var dernier = null; // dernier texte cliqué (pour « Annuler la dernière correction »)
     var reveal = document.getElementById('aproposReveal');
+    function O(L){ return origL[L] = origL[L] || {}; }
+    // Espaces normalisés (doubles espaces, insécables, retours à la ligne) : deux textes qui ne diffèrent que par leurs
+    // espaces sont considérés identiques — évite les fausses corrections et les exports sales.
+    function norm(s){ return (s || '').replace(/[\s  ]+/g, ' ').trim(); }
+    function differe(a, b){ return norm(a) !== norm(b); }
 
     // Identifiant stable : clé data-i18n, sinon chemin CSS (nth-of-type) jusqu'à un id ou body.
     function ident(el){
@@ -825,12 +855,18 @@
     }
     // Élément-feuille porteur de texte, visible, non exclu.
     function candidat(el){
-      if (/^(SCRIPT|STYLE|SVG|PATH|USE|IMG|INPUT|TEXTAREA|SELECT|OPTION|BR|HR|CANVAS|VIDEO|AUDIO|IFRAME)$/.test(el.tagName)) return false;
-      if (el.closest('#revBar') || el.closest('#aproposReveal')) return false;   // intro animée gérée en bloc
+      if (/^(SCRIPT|STYLE|SVG|PATH|USE|IMG|INPUT|TEXTAREA|SELECT|OPTION|BR|HR|CANVAS|VIDEO|AUDIO|IFRAME|BUTTON)$/.test(el.tagName)) return false;
+      // Exclus : la barre et l'aide ; l'intro animée (gérée en bloc) ; tout BOUTON (fermeture des modales, langue,
+      // envoi, ancien éditeur de réglages) qui doit rester cliquable ; le menu et le sélecteur de langue (navigation
+      // et changement de langue conservés) ; la roue animée (remplacée par sa liste source) ; les chiffres animés
+      // des stats (pilotés par script) ; les clones du bandeau mobile (doublons).
+      if (el.closest('#revBar, #revHelp, #aproposReveal, button, #lang, .nav__menu, .hero3__wheelTrack, .stat__chiffre, .is-clone, .carte-gradient__cta')) return false;   // .carte-gradient__cta : le « Voir le détail → » des cartes reste un déclencheur (ouvre la fiche), pas un texte
+      if (el.tagName === 'A' && /^#/.test(el.getAttribute('href') || '') && !el.classList.contains('btn')) return false;   // liens de navigation (pied de page, logo) : restent des liens
       if (el.getAttribute('aria-hidden') === 'true' && !/[A-Za-zÀ-ÿ]/.test(el.textContent || '')) return false;   // aria-hidden décoratif (symboles) exclu ; mais vrai texte (ex: filigrane « CHTIOUI ») reste éditable
       if (el.hasAttribute('aria-haspopup')) return false;   // déclencheur de popup (ex: pastille 01-08) : laisse le clic OUVRIR la modale
       if (el.classList && el.classList.contains('lang-current')) return false;    // « FR » dynamique
       if (!el.getClientRects().length) return false;
+      if (el.checkVisibility && !el.checkVisibility({ visibilityProperty: true })) return false;   // panneaux masqués (visibility:hidden)
       if (!el.textContent || !el.textContent.trim()) return false;
       for (var i = 0; i < el.children.length; i++) { if (el.children[i].textContent && el.children[i].textContent.trim()) return false; }
       return true;
@@ -841,33 +877,76 @@
       return ({ accueil:'Accueil', apropos:'À propos', expertise:'Expertise', parcours:'Parcours',
         realisations:'Réalisations', formation:'Formation', contact:'Contact', footer:'Pied de page', nav:'Menu' })[id] || (id || 'Divers');
     }
-    function activer(el){
-      var id = ident(el); orig[id] = el.textContent; elById[id] = el;
-      var L = lang(); store[L] = store[L] || {};
-      if (store[L][id] != null && store[L][id] !== orig[id]) { el.textContent = store[L][id]; el.classList.add('rev-modif'); }
+    // Branchement commun aux textes de la page et des modales : Entrée = valider (un retour à la ligne insérait un
+    // <div> et collait les mots dans l'export), Échap = valider, collage en texte brut (jamais de mise en forme
+    // copiée depuis Word/le web), touches fléchées/Espace non transmises au site (roue, cartes, carrousel).
+    function brancher(el, onInput){
       el.setAttribute('contenteditable', 'true'); el.setAttribute('spellcheck', 'true');
-      el.dataset.revSection = section(el);
       el.addEventListener('mousedown', function(e){ e.stopPropagation(); }, true);
       el.addEventListener('click', function(e){ e.stopPropagation(); var a = el.closest('a'); if (a) e.preventDefault(); }, true);
+      el.addEventListener('keydown', function(e){
+        if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); el.blur(); }
+        else if (e.key === ' ' || /^Arrow/.test(e.key)) e.stopPropagation();
+      });
+      el.addEventListener('paste', function(e){
+        e.preventDefault();
+        var t = (e.clipboardData || window.clipboardData).getData('text/plain');
+        if (t) document.execCommand('insertText', false, t.replace(/\s+/g, ' '));
+      });
+      el.addEventListener('drop', function(e){ e.preventDefault(); });
+      el.addEventListener('focus', function(){ dernier = el; majBarre(); });
       el.addEventListener('input', function(){
-        var L2 = lang(); store[L2] = store[L2] || {};
-        var v = el.textContent;
-        if (v === orig[id]) { delete store[L2][id]; el.classList.remove('rev-modif'); }
-        else { store[L2][id] = v; el.classList.add('rev-modif'); }
-        save(); majCompteur();
+        if (el.children.length) el.textContent = el.textContent;   // un navigateur a glissé un <br>/<div> (ex. Maj+Entrée) : retour au texte pur
+        onInput(); dernier = el; majBarre();
       });
     }
-    function changements(){
-      var L = lang(), s = store[L] || {}, out = [];
-      Object.keys(s).forEach(function(id){ if (orig[id] !== undefined && s[id] !== orig[id]) out.push({ id: id, sec: (elById[id] && elById[id].dataset.revSection) || 'Divers', avant: orig[id] || '(vide)', apres: s[id] }); });
+    function appliquer(el, key, L){
+      var o = O(L)[key], v = store[L] && store[L][key];
+      if (v != null && differe(v, o)) { if (el.textContent !== v) el.textContent = v; el.classList.add('rev-modif'); }
+      else el.classList.remove('rev-modif');
+    }
+    function enregistrer(el, key){
+      var L = lang(); store[L] = store[L] || {};
+      var v = el.textContent;
+      if (!differe(v, O(L)[key])) { delete store[L][key]; el.classList.remove('rev-modif'); }
+      else { store[L][key] = v; el.classList.add('rev-modif'); }
+      save(); majCompteur();
+    }
+    var origDur = {};   // textes EN DUR (sans data-i18n, identiques dans les 3 langues) : un seul original
+    function activer(el){
+      var id = ident(el); O(lang())[id] = el.textContent; elById[id] = el;
+      el._revKey = function(){ return id; }; el._revPage = true;
+      el._revI18n = el.hasAttribute('data-i18n') || el === reveal;
+      if (!el._revI18n) origDur[id] = el.textContent;
+      el.dataset.revSection = section(el);
+      appliquer(el, id, lang());
+      brancher(el, function(){ enregistrer(el, id); });
+    }
+    function annulerDernier(){
+      var el = dernier; if (!el || !el.classList.contains('rev-modif')) return;
+      var k = el._revKey(), L = lang();
+      el.textContent = O(L)[k]; if (store[L]) delete store[L][k];
+      el.classList.remove('rev-modif'); save(); majCompteur(); majBarre();
+      toast('Correction annulée, texte d’origine rétabli.');
+    }
+    function changements(L){
+      var s = store[L] || {}, o = origL[L] || {}, out = [];
+      Object.keys(s).forEach(function(id){ if (o[id] !== undefined && differe(s[id], o[id])) out.push({ id: id, sec: (elById[id] && elById[id].dataset.revSection) || 'Divers', avant: o[id] || '(vide)', apres: s[id] }); });
       return out;
     }
-    function majCompteur(){ var c = document.getElementById('revCount'); if (c){ var n = changements().length; c.textContent = n ? (n + ' correction' + (n > 1 ? 's' : '')) : 'aucune correction'; } }
+    function total(){ var n = 0; Object.keys(LANGUES).forEach(function(L){ n += changements(L).length; }); return n; }
+    function majCompteur(){ var c = document.getElementById('revCount'); if (c){ var n = total(); c.textContent = n ? (n + ' correction' + (n > 1 ? 's' : '')) : 'aucune correction'; } }
+    function majBarre(){ var b = document.getElementById('revUndo'); if (b) b.hidden = !(dernier && dernier.classList.contains('rev-modif')); }
+    // Export : toutes les langues d'un coup (une correction faite en anglais n'est plus perdue si on copie depuis le
+    // français), espaces normalisés.
     function rapport(){
-      var ch = changements(); if (!ch.length) return '';
-      var t = 'CORRECTIONS DU SITE LAZHAR (langue ' + lang().toUpperCase() + ') — ' + ch.length + ' au total\n\n';
-      ch.forEach(function(c){ t += '• ' + c.sec + ' — repère: ' + c.id + '\n  AVANT : ' + c.avant + '\n  APRÈS : ' + c.apres + '\n\n'; });
-      return t;
+      var n = 0, t = '';
+      Object.keys(LANGUES).forEach(function(L){
+        var ch = changements(L); if (!ch.length) return; n += ch.length;
+        t += '--- ' + LANGUES[L].toUpperCase() + ' (' + ch.length + ') ---\n\n';
+        ch.forEach(function(c){ t += '• ' + c.sec + ' — repère: ' + c.id + '\n  AVANT : ' + norm(c.avant) + '\n  APRÈS : ' + norm(c.apres) + '\n\n'; });
+      });
+      return n ? ('CORRECTIONS DU SITE LAZHAR — ' + n + ' au total (' + new Date().toLocaleDateString('fr-FR') + ')\n\n' + t) : '';
     }
     function toast(m, ok){ var d = document.createElement('div'); d.textContent = m;
       d.style.cssText = 'position:fixed;left:50%;top:18px;transform:translateX(-50%);background:' + (ok === false ? '#dc2626' : '#16a34a') + ';color:#fff;padding:10px 18px;border-radius:10px;z-index:100001;font:14px system-ui;box-shadow:0 6px 20px rgba(0,0,0,.3);max-width:90vw;text-align:center';
@@ -876,9 +955,28 @@
       var t = rapport();
       if (!t) { toast('Aucune correction pour l’instant — cliquez un texte et modifiez-le.', false); return; }
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(t).then(function(){ toast('Corrections copiées ✓ — collez-les dans un message à Sofian.'); },
+        navigator.clipboard.writeText(t).then(function(){ toast('Corrections copiées ✓ — collez-les dans un message WhatsApp à Sofian.'); },
           function(){ window.prompt('Copiez ce texte (Ctrl+C) et envoyez-le à Sofian :', t); });
       } else { window.prompt('Copiez ce texte (Ctrl+C) et envoyez-le à Sofian :', t); }
+    }
+    function aide(){
+      if (document.getElementById('revHelp')) return;
+      var d = document.createElement('div'); d.id = 'revHelp';
+      d.innerHTML = '<div class="rev-help__box"><h2>Comment corriger les textes du site</h2><ol>'
+        + '<li><b>Cliquez sur un texte</b> et corrigez-le directement, comme dans Word. Appuyez sur <b>Entrée</b> quand vous avez fini (ou cliquez ailleurs).</li>'
+        + '<li>Le texte corrigé passe en <b>vert</b>. Tout s’enregistre tout seul : vous pouvez fermer la page et revenir plus tard, sur le même ordinateur.</li>'
+        + '<li>Pour corriger le contenu détaillé des <b>cartes Expertise</b>, cliquez sur leur bouton bleu <b>« Voir le détail »</b>. Pour le Parcours, cliquez sur les numéros 01 à 08. Pour la Formation, cliquez sur les photos.</li>'
+        + '<li>Quand tout est relu, cliquez sur <b>« Copier mes corrections »</b> en bas de l’écran, puis collez le tout dans un message WhatsApp à Sofian.</li>'
+        + '</ol><button type="button" id="revHelpOk">C’est compris</button></div>';
+      document.body.appendChild(d);
+      d.querySelector('#revHelpOk').onclick = function(){ d.remove(); try { localStorage.setItem(KEY_AIDE, '1'); } catch(e){} };
+    }
+    function boutonsDetail(){
+      document.querySelectorAll('.carte-gradient').forEach(function(c){
+        var b = document.createElement('button'); b.type = 'button'; b.className = 'rev-detail'; b.textContent = 'Voir le détail';
+        b.title = 'Ouvrir la fiche détaillée de cette carte pour la corriger aussi';
+        c.appendChild(b);   // le clic remonte à la carte, qui ouvre sa fiche
+      });
     }
     // --- Modales/popups dynamiques (Expertise, Parcours, Formation) : leur contenu est rendu au CLIC
     //     (invisibles au chargement). On les rend éditables À L'OUVERTURE via un MutationObserver.
@@ -891,33 +989,22 @@
     function activerModale(m){
       if (m._revBusy || !m.getClientRects().length) return;
       m._revBusy = true;
-      var L = lang(); store[L] = store[L] || {};
+      var L = lang(), o = O(L);
       var noeuds = m.querySelectorAll('*');
       for (var i = 0; i < noeuds.length; i++) {
         var el = noeuds[i];
         if (!candidat(el)) continue;
         if (el.id && /Num$|Close/i.test(el.id)) continue;
         var key = cleModale(m, el);
-        if (!(key in orig)) orig[key] = el.textContent;
+        if (!(key in o)) o[key] = el.textContent;
         elById[key] = el;
-        if (store[L][key] != null && store[L][key] !== orig[key]) {
-          if (el !== document.activeElement && el.textContent !== store[L][key]) el.textContent = store[L][key];
-          el.classList.add('rev-modif');
-        } else if (el.textContent === orig[key]) { el.classList.remove('rev-modif'); }
+        if (el !== document.activeElement) appliquer(el, key, L);
         if (!el._revWired) {
           el._revWired = true;
-          el.setAttribute('contenteditable', 'true'); el.setAttribute('spellcheck', 'true');
           el.dataset.revSection = MODALES[m.id] || 'Détail';
-          el.addEventListener('mousedown', function(e){ e.stopPropagation(); }, true);
-          el.addEventListener('click', function(e){ e.stopPropagation(); }, true);
           (function(node, modale){
-            node.addEventListener('input', function(){
-              var k = cleModale(modale, node), L2 = lang(); store[L2] = store[L2] || {};
-              var v = node.textContent;
-              if (v === orig[k]) { delete store[L2][k]; node.classList.remove('rev-modif'); }
-              else { store[L2][k] = v; node.classList.add('rev-modif'); }
-              save(); majCompteur();
-            });
+            node._revKey = function(){ return cleModale(modale, node); };
+            brancher(node, function(){ enregistrer(node, cleModale(modale, node)); });
           })(el, m);
         }
       }
@@ -933,6 +1020,7 @@
 
     function start(){
       document.body.classList.add('revision-on');
+      boutonsDetail();
       var all = document.querySelectorAll('body *'), list = [];
       for (var i = 0; i < all.length; i++) { if (candidat(all[i])) list.push(all[i]); }
       if (reveal && reveal.textContent.trim()) list.push(reveal);   // intro animée « À propos » éditable en bloc
@@ -940,27 +1028,39 @@
       var barre = document.createElement('div'); barre.id = 'revBar';
       barre.innerHTML =
           '<b>✎ Mode révision</b>'
-        + '<span class="rev-hint">Cliquez n’importe quel texte pour le corriger · sauvegarde auto.</span>'
+        + '<span class="rev-hint">Cliquez un texte pour le corriger · Entrée pour valider · sauvegarde auto.</span>'
         + '<span class="rev-spacer"></span>'
         + '<span id="revCount"></span>'
+        + '<button class="rev-warn" id="revUndo" hidden>Annuler la dernière correction</button>'
         + '<button class="rev-primary" id="revCopy">Copier mes corrections</button>'
-        + '<button class="rev-ghost" id="revReset">Réinitialiser</button>'
+        + '<button class="rev-ghost" id="revHelp2">Aide</button>'
+        + '<button class="rev-ghost" id="revReset">Tout effacer</button>'
         + '<button class="rev-ghost" id="revQuit">Quitter</button>';
       document.body.appendChild(barre);
       document.getElementById('revCopy').onclick = copier;
-      document.getElementById('revReset').onclick = function(){ if (window.confirm('Effacer toutes vos corrections ?')) { store[lang()] = {}; save(); location.reload(); } };
+      document.getElementById('revUndo').onclick = annulerDernier;
+      document.getElementById('revHelp2').onclick = aide;
+      document.getElementById('revReset').onclick = function(){ if (window.confirm('Effacer TOUTES vos corrections (dans les 3 langues) ? Cette action est définitive.')) { store = {}; save(); location.reload(); } };
       document.getElementById('revQuit').onclick = function(){ location.href = location.pathname; };
+      // Le bas de page reste lisible sous la barre, quelle que soit sa hauteur (elle s'enroule sur téléphone)
+      function reserverBas(){ document.body.style.paddingBottom = (barre.offsetHeight + 12) + 'px'; }
+      reserverBas(); window.addEventListener('resize', reserverBas);
       majCompteur();
       observerModales();
+      // Changement de langue : i18n.js vient de réécrire les textes → on relit les originaux de cette langue et on
+      // réapplique les corrections déjà faites dans cette langue.
       document.addEventListener('langchange', function(){
-        var L = lang(); store[L] = store[L] || {};
-        document.querySelectorAll('[data-i18n][contenteditable="true"]').forEach(function(el){
-          var id = ident(el); orig[id] = el.textContent; elById[id] = el;
-          if (store[L][id] != null && store[L][id] !== orig[id]) { el.textContent = store[L][id]; el.classList.add('rev-modif'); }
-          else el.classList.remove('rev-modif');
+        var L = lang();
+        document.querySelectorAll('[contenteditable="true"]').forEach(function(el){
+          if (!el._revPage) return;
+          var id = el._revKey(); elById[id] = el;
+          O(L)[id] = el._revI18n ? el.textContent : origDur[id];   // texte traduit : relu ; texte en dur : original conservé (pas réécrit par i18n)
+          appliquer(el, id, L);
         });
         majCompteur();
       });
+      var vue = false; try { vue = localStorage.getItem(KEY_AIDE) === '1'; } catch(e){}
+      if (!vue) aide();
     }
     if (document.readyState === 'complete') start(); else window.addEventListener('load', start);
   })();
